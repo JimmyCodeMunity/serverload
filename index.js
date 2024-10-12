@@ -295,12 +295,14 @@ io.on("connection", (socket) => {
       console.error("Trip not found!");
     }
   });
+
+
   socket.on("start-trip", async ({ tripId }) => {
     console.log("Driver Started trip:", tripId);
 
     const trip = await Trip.findById(tripId);
     if (trip) {
-      trip.status = "accepted";
+      trip.status = "started";
       // console.log("trip acceted is",trip)
       // return
       // await trip.save();
@@ -309,10 +311,12 @@ io.on("connection", (socket) => {
 
       // Notify the user that the trip has been accepted
       const userSocketId = users.get(trip.userId.toString());
+      users.set(userSocketId, socket.id);
       console.log("user socket",userSocketId)
       if (userSocketId) {
-        users.set(userSocketId, socket.id);
+        // users.set(userSocketId, socket.id);
         console.log("user order", userSocketId);
+        io.to(userSocketId).emit("started", trip);
       } else {
         console.log("error setting order id");
       }
