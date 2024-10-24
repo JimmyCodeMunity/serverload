@@ -67,16 +67,22 @@ app.get("/", (req, res) => {
 // Track drivers' sockets
 const drivers = new Map(); // This will hold the driverId and their corresponding socket ID
 const users = new Map(); // This will hold the driverId and their corresponding socket ID
-
+const userSocketMap = {};
+// const driverSocketMap = {}
 // Track driver's location
 io.on("connection", (socket) => {
-  console.log(`user ${socket.id} connected`);
+  console.log("user connected successfully", socket.id);
+  const userId = socket.handshake.query.userId;
+  console.log("userid", userId);
 
-  socket.on("send_message", (data) => {
-    // console.log("roomdata",data.room)
-    console.log("message", data);
-    socket.broadcast.emit("receive_message", data);
-    // socket.to(data.room).emit("receive_message",data)
+  if (userId !== "undefined") {
+    userSocketMap[userId] = socket.id;
+  }
+  console.log("user socket map", userSocketMap);
+  socket.on("disconnect", () => {
+    console.log("user disconnected", socket.id);
+    delete userSocketMap[userId];
+    console.log("user socket map after disconnect", userSocketMap);
   });
 
   // driver onlinemode
@@ -296,7 +302,6 @@ io.on("connection", (socket) => {
     }
   });
 
-
   socket.on("start-trip", async ({ tripId }) => {
     console.log("Driver Started trip:", tripId);
 
@@ -312,11 +317,83 @@ io.on("connection", (socket) => {
       // Notify the user that the trip has been accepted
       const userSocketId = users.get(trip.userId.toString());
       users.set(userSocketId, socket.id);
-      console.log("user socket",userSocketId)
+      console.log("user socket", userSocketId);
       if (userSocketId) {
         // users.set(userSocketId, socket.id);
         console.log("user order", userSocketId);
         io.to(userSocketId).emit("started", trip);
+      } else {
+        console.log("error setting order id");
+      }
+
+      // if (userSocketId) {
+      //   io.to(userSocketId).emit("trip-acceptedbydriver", trip);
+      // }
+
+      console.log(
+        `Driver started the trip and user ${trip.userId} has been notified.`
+      );
+    } else {
+      console.error("Trip not found!");
+    }
+  });
+
+
+  socket.on("driver-accepted", async ({ tripId }) => {
+    console.log("Driver Accepted trip:", tripId);
+
+    const trip = await Trip.findById(tripId);
+    if (trip) {
+      trip.status = "drivingtodestination";
+      // console.log("trip acceted is",trip)
+      // return
+      await trip.save();
+      console.log("started trip", trip);
+      console.log("started user", trip.userId.toString());
+
+      // Notify the user that the trip has been accepted
+      const tripuser = trip.userId.toString();
+      const userSocketId = userSocketMap[tripuser]
+      // console.log("user socket", userSocketId);
+      if (userSocketId) {
+        // users.set(userSocketId, socket.id);
+        console.log("user order", userSocketId);
+        io.to(userSocketId).emit("driving-to-destination", trip);
+      } else {
+        console.log("error setting order id");
+      }
+
+      // if (userSocketId) {
+      //   io.to(userSocketId).emit("trip-acceptedbydriver", trip);
+      // }
+
+      console.log(
+        `Driver started the trip and user ${trip.userId} has been notified.`
+      );
+    } else {
+      console.error("Trip not found!");
+    }
+  });
+  socket.on("driver-declined", async ({ tripId }) => {
+    console.log("Driver declined trip:", tripId);
+
+    const trip = await Trip.findById(tripId);
+    if (trip) {
+      trip.status = "declined";
+      // console.log("trip acceted is",trip)
+      // return
+      // await trip.save();
+      console.log("started trip", trip);
+      console.log("started user", trip.userId.toString());
+
+      // Notify the user that the trip has been accepted
+      const tripuser = trip.userId.toString();
+      const userSocketId = userSocketMap[tripuser]
+      // console.log("user socket", userSocketId);
+      if (userSocketId) {
+        // users.set(userSocketId, socket.id);
+        console.log("user order", userSocketId);
+        io.to(userSocketId).emit("driver-declined-trip", trip);
       } else {
         console.log("error setting order id");
       }
@@ -533,15 +610,58 @@ io.on("connection", (socket) => {
   //     }
   //   }
   // );
+  
+
+  socket.on("trip-has-started", async ({ trip, userId, receiverId }) => {
+    console.log("trip", trip);
+    console.log("driver Id", userId);
+    console.log("client Id", receiverId);
+
+    const receiverSocketId = userSocketMap[receiverId];
+    if (receiverSocketId) {
+      console.log("Receiver socket id:", receiverSocketId);
+      // Send the trip to the specific client
+      io.to(receiverSocketId).emit("trip-has-started", trip);
+
+      // Confirm on the driver's side
+      // socket.emit("trip-has-started", trip);
+    } else {
+      console.log("Receiver socket id not found!");
+    }
+  });
+
+  socket.on("driver-is-waiting", async ({ trip, userId, receiverId }) => {
+    console.log("driver is waiting");
+    // console.log("driver Id", userId);
+    // console.log("client Id", receiverId);
+
+    const receiverSocketId = userSocketMap[receiverId];
+    if (receiverSocketId) {
+      console.log("Receiver socket id:", receiverSocketId);
+      // Send the trip to the specific client
+      io.to(receiverSocketId).emit("driver-is-waiting", trip);
+
+      // Confirm on the driver's side
+      // socket.emit("trip-has-started", trip);
+    } else {
+      console.log("Receiver socket id not found!");
+    }
+  });
 
   socket.on(
     "find-driver",
     async ({ userId, startLocation, destinationLocation, from, to }) => {
-      users.set(userId, socket.id);
-      console.log(`User ${userId} has been assigned socket ID: ${socket.id}`);
+      // users.set(userId, socket.id);
+      // console.log("request from",userId)
+      // console.log("starting",startLocation)
+      // console.log("ending",destinationLocation)
+
+      const receiverSocketId = userSocketMap[userId];
+      // console.log(`User ${userId} has been assigned socket ID: ${socket.id}`);
 
       // Store rejected drivers in a Set, initially empty
-      const rejectedDrivers = new Set();
+      const rejectedDrivers = {};
+      // return
 
       console.log("userid" + userId);
       console.log("startLocationlat" + startLocation.latitude);
@@ -677,9 +797,13 @@ io.on("connection", (socket) => {
 
         await trip.save();
 
-        const driverSocketId = drivers.get(closestDriver._id.toString());
-        if (driverSocketId) {
-          io.to(driverSocketId).emit("trip-request", trip);
+        // const driverSocket = drivers.get(closestDriver._id.toString());
+        const driverSocket = closestDriver._id;
+        console.log("driverSocket: " + driverSocket);
+        const receiverSocketId = userSocketMap[driverSocket];
+        console.log("rec socket", receiverSocketId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("trip-request", trip);
           socket.emit("trip-accepted", trip);
         } else {
           console.error(`Driver ${closestDriver._id} is offline`);
@@ -693,6 +817,10 @@ io.on("connection", (socket) => {
       }
     }
   }
+
+  socket.on("driving-t0-destination",async()=>{
+
+  })
 
   socket.on("driver-reject-trip", async (tripId) => {
     const trip = await Trip.findByIdAndUpdate(
