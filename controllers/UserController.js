@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const User = require("../model/UserModel");
 const jwt = require('jsonwebtoken');
 const Driver = require("../model/DriverModel");
+const Message = require("../model/MessageModel");
 
 // if (process.env.NODE_ENV !== "PRODUCTION") {
 //     require("dotenv").config({
@@ -121,6 +122,44 @@ const getUserById = async (req, res) => {
     res.status(500).json({ error: "Failed to get user data." });
   }
 };
+const sendMessage = async (io, receiverSocketId, senderId, receiverId, message) => {
+  try {
+    // Save the message in the database
+    const newMessage = new Message({
+      senderId,
+      receiverId,
+      message,
+    });
+
+    await newMessage.save();
+
+    // Emit the newMessage event to the receiver if they're online
+    if (receiverSocketId) {
+      console.log("Emitting receiveMessage event to", receiverId);
+      io.to(receiverSocketId).emit("newMessage", { senderId, receiverId, message });
+    } else {
+      console.log("Receiver socket ID not found");
+    }
+  } catch (error) {
+    console.log("Error sending message:", error);
+  }
+};
+const getMessages = async (req, res) => {
+  try {
+    const { senderId, receiverId } = req.query;
+    const messages = await Message.find({
+      $or: [
+        { senderId:senderId,receiverId:receiverId },
+        { senderId: receiverId, receiverId: senderId },
+      ],
+    }).populate("senderId", "_id name");
+    res.status(200).json(messages);
+  } catch (error) {
+    console.log("error getting messages:", error);
+    res.status(500).json({ message: error.message });
+    return;
+  }
+};
 
 
 module.exports = {
@@ -128,5 +167,7 @@ module.exports = {
     userLogin,
     getUserData,
     findOnlineDrivers,
-    getUserById
+    getUserById,
+    sendMessage,
+    getMessages,
 }

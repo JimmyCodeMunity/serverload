@@ -5,6 +5,11 @@ const mongoose = require("mongoose");
 const http = require("http");
 const { Server } = require("socket.io");
 const geolib = require("geolib");
+const Stripe = require("stripe");
+const STRIPE_SECRET_KEY =
+  "sk_test_51Oc4wRJE5eZbfcv0cFDOguSg9YFS8Bswru6JaXimoGk6NbBuBy2fUi8CKTjsaHPV7dlS1cTXJrd2mmPfrJg8WjEo00fuiP5l84";
+
+  const stripe = Stripe(STRIPE_SECRET_KEY);
 
 const app = express();
 app.use(cors());
@@ -48,6 +53,41 @@ const dbconn = process.env.DB_URL;
 
 server.listen(port, (req, res) => {
   console.log(`Server is running on port ${port}`);
+});
+
+
+// Create a payment route
+app.post('/create-payment-intent', async (req, res) => {
+  try {
+    const { amount, currency } = req.body;
+    console.log("amount",amount)
+    console.log("currency",currency)
+
+    // Create a customer
+    const customer = await stripe.customers.create();
+
+    // Create an ephemeral key for the customer
+    const ephemeralKey = await stripe.ephemeralKeys.create(
+      { customer: customer.id },
+      { apiVersion: '2022-11-15' }
+    );
+
+    // Create a PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount, // Amount in smallest unit, for example 5000 means $50.00
+      currency: currency || 'usd',
+      customer: customer.id,
+      automatic_payment_methods: { enabled: true }, // Enable automatic payment methods
+    });
+
+    res.send({
+      paymentIntent: paymentIntent.client_secret,
+      ephemeralKey: ephemeralKey.secret,
+      customer: customer.id,
+    });
+  } catch (error) {
+    res.status(400).send({ error: error.message });
+  }
 });
 
 //connect to db
@@ -124,6 +164,55 @@ io.on("connection", (socket) => {
       }
     }
   });
+
+
+  // listen to paid trips
+  
+  socket.on("trip-paid", async ({ tripId }) => {
+
+    const trip = await Trip.findById(tripId);
+    if (trip) {
+      trip.status = "completed";
+      // console.log("trip acceted is",trip)
+      // return
+      await trip.save();
+      
+
+      // Notify the user that the trip has been accepted
+      const userpaid = trip?.driverId.toString();
+      const userSocketId = userSocketMap[userpaid];
+      if (userSocketId) {
+        // users.set(userSocketId, socket.id);
+        console.log("completed trip", trip);
+        io.to(userSocketId).emit("trip-paid-successfully", trip);
+      } else {
+        console.log("error setting order id");
+      }
+    } else {
+      console.error("Trip not found!");
+    }
+  });
+  socket.on("trip-payment-cancelled",async(tripId)=>{
+    console.log("payment cancelled with id",tripId)
+
+  })
+
+
+  // send messages
+  socket.on("sendMessage",({senderId,receiverId,message})=>{
+    const receiverSocketId = userSocketMap[receiverId];
+    // console.log("receiverSocketId", receiverSocketId);
+    // console.log("receiverId", receiverId);
+    // console.log("message", message);
+    // console.log("senders id", senderId);
+    // const sendingfrom = senderId;
+    
+    if(receiverSocketId){
+      // sendMessage(userid,senderId, receiverId, message,receiverSocketId)
+      // io.to(receiverSocketId).emit("newMessage", {senderId:sendingfrom, receiverId, message});
+      sendMessage(io, receiverSocketId, senderId, receiverId, message);
+    }
+  })
 
   // driver offline mode
   socket.on("driver-go-offline", async ({ driverId, location }) => {
@@ -410,6 +499,38 @@ io.on("connection", (socket) => {
     }
   });
 
+
+
+  // detect when ride is cancelled
+  socket.on("user-cancel-ride", async ({ tripId }) => {
+    console.log("Ride cancelled:", tripId);
+
+    const trip = await Trip.findById(tripId);
+    if (trip) {
+      trip.status = "cancelled";
+      await trip.save();
+
+      // Notify the user that the trip has been cancelled
+      // const userSocketId = users.get(trip.userId.toString());
+      // if (userSocketId) {
+      //   io.to(userSocketId).emit("trip-cancelled", trip);
+      // }
+
+      // Clear the driver’s socket to prevent further requests
+      const drivercancelled = trip.driverId.toString();
+      const driverSocketId = userSocketMap[drivercancelled];
+      if (driverSocketId) {
+        // userSocketMap[driverCancelled] = undefined;
+        // emit to driver
+        io.to(driverSocketId).emit("user-cancelled-ride", trip);
+        console.log(`Driver ${trip.driverId} removed from userSocketMap.`);
+      }
+      console.log("cancelled driver", drivercancelled);
+      
+      }
+    }
+  )
+
   // socket.on("reject-trip", async ({ tripId }) => {
   //   console.log("Driver rejected trip:", tripId);
 
@@ -439,6 +560,35 @@ io.on("connection", (socket) => {
   //   }
   // });
 
+
+  // socket.on("request-payment",async(trip)=>{
+  //   console.log("driver requesting payment fro trip",trip)
+  // })
+
+  socket.on("request-payment", async ({ trip }) => {
+    console.log("driver requesting payment fro trip:", trip.userId);
+
+    const mytrip = await Trip.findById(trip?._id);
+    if (mytrip) {
+      mytrip.status = "awaitingpayment";
+      // await mytrip.save();
+
+      // Notify the user that the trip has been rejected
+      const usertopay = mytrip?.userId.toString();
+      console.log("usertopay", usertopay);
+      const userSocketId = userSocketMap[usertopay];
+      console.log("request payment from",userSocketId)
+      if (userSocketId) {
+        io.to(userSocketId).emit("please-pay", trip);
+      }
+
+      // console.log(
+      //   `Driver requested the trip and user ${trip.userId} has been notified.`
+      // );
+    } else {
+      console.error("Trip not found!");
+    }
+  });
   socket.on("reject-trip", async ({ tripId }) => {
     console.log("Driver rejected trip:", tripId);
 
@@ -847,6 +997,7 @@ const driverroutes = require("./routes/DriverRoutes");
 const Trip = require("./model/TripModel");
 const Driver = require("./model/DriverModel");
 const { default: axios } = require("axios");
+const { sendMessage } = require("./controllers/UserController");
 
 //api routes
 app.use("/api/v1/user/", userroutes);
